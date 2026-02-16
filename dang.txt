@@ -100,7 +100,7 @@ local CFG = {
     },
     Movement = {
         Speed       = false,
-        SpeedVal    = 1.5,
+        SpeedVal    = 2.0,    -- WalkSpeed multiplier (2x = 32 ws)
         Fly         = false,
         FlySpeed    = 60,
         Noclip      = false,
@@ -168,10 +168,85 @@ local function IsAlive(plr)
     return h and h.Health > 0
 end
 
+-- Advanced team check for Rivals
+-- Rivals doesn't always use standard Player.Team reliably
+-- This tries multiple detection methods
 local function IsEnemy(plr)
-    if not CFG.Combat.TeamCheck then return true end
-    if not LP.Team then return true end
-    return plr.Team ~= LP.Team
+    if not CFG.Combat.TeamCheck then return true end -- team check off = everyone is enemy
+    if plr == LP then return false end
+
+    -- Method 1: Standard Team object comparison
+    if LP.Team and plr.Team then
+        if LP.Team == plr.Team then return false end
+        if LP.Team ~= plr.Team then return true end
+    end
+
+    -- Method 2: TeamColor comparison (works when Team objects exist but differ)
+    pcall(function()
+        if LP.TeamColor and plr.TeamColor then
+            if LP.TeamColor == plr.TeamColor then return false end -- same team
+        end
+    end)
+
+    -- Method 3: Check player attributes (some games store team as attribute)
+    local myTeamAttr, theirTeamAttr = nil, nil
+    pcall(function() myTeamAttr = LP:GetAttribute("Team") or LP:GetAttribute("team") or LP:GetAttribute("TeamId") end)
+    pcall(function() theirTeamAttr = plr:GetAttribute("Team") or plr:GetAttribute("team") or plr:GetAttribute("TeamId") end)
+    if myTeamAttr ~= nil and theirTeamAttr ~= nil then
+        return myTeamAttr ~= theirTeamAttr
+    end
+
+    -- Method 4: Check character-based indicators
+    -- Rivals often has team indicators in character models
+    pcall(function()
+        local myChar = LP.Character
+        local theirChar = plr.Character
+        if myChar and theirChar then
+            -- Check for team value objects inside characters
+            local myTeamVal = myChar:FindFirstChild("TeamValue") or myChar:FindFirstChild("Team")
+            local theirTeamVal = theirChar:FindFirstChild("TeamValue") or theirChar:FindFirstChild("Team")
+            if myTeamVal and theirTeamVal then
+                if myTeamVal.Value == theirTeamVal.Value then return false end
+            end
+
+            -- Check leaderstats
+            local myStats = LP:FindFirstChild("leaderstats")
+            local theirStats = plr:FindFirstChild("leaderstats")
+            if myStats and theirStats then
+                local myT = myStats:FindFirstChild("Team")
+                local theirT = theirStats:FindFirstChild("Team")
+                if myT and theirT then
+                    if myT.Value == theirT.Value then return false end
+                end
+            end
+        end
+    end)
+
+    -- Method 5: Check game-specific team folders in workspace
+    pcall(function()
+        local teamsFolder = WS:FindFirstChild("Teams") or WS:FindFirstChild("GameTeams")
+        if teamsFolder then
+            for _, teamFolder in ipairs(teamsFolder:GetChildren()) do
+                local imInThis = false
+                local theyInThis = false
+                for _, child in ipairs(teamFolder:GetChildren()) do
+                    if child:IsA("ObjectValue") then
+                        if child.Value == LP then imInThis = true end
+                        if child.Value == plr then theyInThis = true end
+                    end
+                end
+                if imInThis and theyInThis then return false end -- same team folder
+            end
+        end
+    end)
+
+    -- Method 6: Neutral name comparison ("Spectators", etc.)
+    pcall(function()
+        if LP.Team and LP.Team.Name:lower():find("spectat") then return false end
+    end)
+
+    -- Default: if no team info found, assume enemy
+    return true
 end
 
 local function Char(plr)
@@ -546,17 +621,15 @@ end)
 --  Movement: Fly
 -- ═══════════════════════════════════════════════════════════
 
-local FlyBV = nil
+local FlyActive = false
+local OrigWS = 16
 
 -- ═══════════════════════════════════════════════════════════
 --  Main RenderStepped loop
 -- ═══════════════════════════════════════════════════════════
 
-table.insert(CN, RS.RenderStepped:Connect(function()
-    if not Running then
-        if FlyBV then FlyBV:Destroy(); FlyBV = nil end
-        return
-    end
+table.insert(CN, RS.RenderStepped:Connect(function(dt)
+    if not Running then return end
 
     -- FOV circle
     if FOVCircle then
@@ -614,30 +687,41 @@ table.insert(CN, RS.RenderStepped:Connect(function()
     local hum = LocalHum()
     if not hrp or not hum then return end
 
-    -- Speed (CFrame)
+    -- Speed (WalkSpeed override — reliable, doesn't get reset by char controller)
     if CFG.Movement.Speed then
-        if hum.MoveDirection.Magnitude > 0 then
-            hrp.CFrame = hrp.CFrame + (hum.MoveDirection * CFG.Movement.SpeedVal)
-        end
+        hum.WalkSpeed = 16 * CFG.Movement.SpeedVal
     end
 
-    -- Fly
+    -- Fly (CFrame-based — BodyVelocity gets deleted by Rivals anti-cheat)
     if CFG.Movement.Fly then
-        if not FlyBV then
-            FlyBV = Instance.new("BodyVelocity")
-            FlyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-            FlyBV.Parent = hrp
+        if not FlyActive then
+            FlyActive = true
+            OrigWS = hum.WalkSpeed
         end
-        local vel = Vector3.zero
-        if UIS:IsKeyDown(Enum.KeyCode.W) then vel = vel + Camera.CFrame.LookVector * CFG.Movement.FlySpeed end
-        if UIS:IsKeyDown(Enum.KeyCode.S) then vel = vel - Camera.CFrame.LookVector * CFG.Movement.FlySpeed end
-        if UIS:IsKeyDown(Enum.KeyCode.A) then vel = vel - Camera.CFrame.RightVector * CFG.Movement.FlySpeed end
-        if UIS:IsKeyDown(Enum.KeyCode.D) then vel = vel + Camera.CFrame.RightVector * CFG.Movement.FlySpeed end
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then vel = vel + Vector3.new(0, CFG.Movement.FlySpeed, 0) end
-        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then vel = vel - Vector3.new(0, CFG.Movement.FlySpeed, 0) end
-        FlyBV.Velocity = vel
+        -- Cancel gravity by zeroing velocity and forcing swimming state
+        hrp.Velocity = Vector3.new(0, 0, 0)
+        hum:ChangeState(Enum.HumanoidStateType.Swimming)
+
+        -- Build movement direction from keys
+        local dir = Vector3.zero
+        if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + Camera.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - Camera.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - Camera.CFrame.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + Camera.CFrame.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0,1,0) end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0,1,0) end
+
+        if dir.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + dir.Unit * CFG.Movement.FlySpeed * dt
+        end
     else
-        if FlyBV then FlyBV:Destroy(); FlyBV = nil end
+        if FlyActive then
+            FlyActive = false
+            -- Don't reset WalkSpeed if speed hack is on
+            if not CFG.Movement.Speed then
+                hum.WalkSpeed = OrigWS
+            end
+        end
     end
 
     -- SpinBot
@@ -1036,7 +1120,12 @@ local function BuildMenu()
                 Lighting.GlobalShadows = not tbl[key]
             end
             if key == "Speed" and not tbl[key] then
-                local h = LocalHum(); if h then h.WalkSpeed=16; h.JumpPower=50 end
+                local h = LocalHum(); if h then h.WalkSpeed=16 end
+            end
+            if key == "Fly" and not tbl[key] then
+                FlyActive = false
+                local h = LocalHum(); if h then h.WalkSpeed=16 end
+                local r = LocalHRP(); if r then r.Velocity = Vector3.new(0,0,0) end
             end
             if key == "ThirdPerson" and not tbl[key] then
                 LP.CameraMaxZoomDistance = 128
