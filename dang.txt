@@ -1,13 +1,15 @@
 --[[
-    NullSyntax — Rivals Cheat Suite v5 (FINAL)
+    NullSyntax — Rivals Cheat Suite v6
     Executor: Xeno (nil-safe)
 
     COMBAT:    Legit Aim, Rage Aim, Silent Aim (namecall), Auto Shoot,
                Hitbox Expander, No Recoil
-    VISUALS:   ESP (Box/Tracer/Name/Health), Chams, Crosshair, FOV Circle
-    MOVEMENT:  CFrame Speed, Fly, Noclip, Infinite Jump, BunnyHop, SpinBot
-    MISC:      Anti-Kick, Visual Invis, Under-Map Invis, Full Bright,
-               Blast Protection, Server Hop, Rejoin
+    VISUALS:   ESP (Box/Tracer/Name/Health), Chams, Crosshair, FOV Circle,
+               FOV Changer, Weapon ESP, Third Person Lock
+    MOVEMENT:  CFrame Speed, Fly, Noclip, Infinite Jump, BunnyHop, SpinBot,
+               No Fall Damage
+    MISC:      Anti-Kick, Anti-AFK, Visual Invis, Under-Map Invis, Full Bright,
+               Blast Protection, Server Hop, Rejoin, TP to Closest
     BETA:      Tiny Character, God Hitbox
 
     Controls:  RightAlt = Menu  |  Insert = Master Toggle
@@ -88,6 +90,10 @@ local CFG = {
         Health    = true,
         Chams     = false,
         Crosshair = false,
+        WeaponESP = false,
+        ThirdPerson = false,
+        FOVChanger  = false,
+        GameFOV     = 70,
         MaxDist   = 2000,
         EnemyCol  = Color3.fromRGB(255, 50, 80),
         TeamCol   = Color3.fromRGB(50, 255, 120),
@@ -101,9 +107,11 @@ local CFG = {
         InfJump     = false,
         BunnyHop    = false,
         SpinBot     = false,
+        NoFallDmg   = false,
     },
     Misc = {
         AntiKick    = true,
+        AntiAFK     = true,
         InvisVis    = false,
         InvisUnder  = false,
         FullBright  = false,
@@ -577,11 +585,29 @@ table.insert(CN, RS.RenderStepped:Connect(function()
     -- ESP
     TickESP()
 
+    -- Weapon ESP
+    if CFG.Visuals.WeaponESP then
+        TickWeaponESP()
+    else
+        HideWeaponESP()
+    end
+
     -- Silent aim target update
     if CFG.Combat.SilentAim then
         STarget = GetSilentTarget()
     else
         STarget = nil
+    end
+
+    -- FOV Changer
+    if CFG.Visuals.FOVChanger then
+        Camera.FieldOfView = CFG.Visuals.GameFOV
+    end
+
+    -- Third Person Lock
+    if CFG.Visuals.ThirdPerson then
+        LP.CameraMaxZoomDistance = 20
+        LP.CameraMinZoomDistance = 10
     end
 
     local hrp = LocalHRP()
@@ -622,6 +648,12 @@ table.insert(CN, RS.RenderStepped:Connect(function()
     -- BunnyHop
     if CFG.Movement.BunnyHop and hum.FloorMaterial ~= Enum.Material.Air then
         hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+
+    -- No Fall Damage
+    if CFG.Movement.NoFallDmg then
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
     end
 
     -- Under-map invis
@@ -710,6 +742,78 @@ table.insert(CN, WS.DescendantAdded:Connect(function(desc)
         end
     end
 end))
+
+-- ═══════════════════════════════════════════════════════════
+--  Anti-AFK
+-- ═══════════════════════════════════════════════════════════
+
+task.spawn(function()
+    while task.wait(60) do
+        if not Running then break end
+        if CFG.Misc.AntiAFK then
+            pcall(function()
+                local VU = game:GetService("VirtualUser")
+                VU:CaptureController()
+                VU:ClickButton2(Vector2.new(0,0))
+            end)
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════
+--  Weapon / Item ESP
+-- ═══════════════════════════════════════════════════════════
+
+local WeapESP = {}
+
+local function TickWeaponESP()
+    -- Find tools/weapons on ground (parented to workspace, not to a character)
+    local handled = {}
+    for _, obj in ipairs(WS:GetDescendants()) do
+        if (obj:IsA("Tool") or obj:IsA("Model")) and obj:FindFirstChild("Handle") then
+            -- Skip if parented to a character
+            local isHeld = false
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr.Character and obj:IsDescendantOf(plr.Character) then isHeld = true; break end
+            end
+            if isHeld then continue end
+
+            handled[obj] = true
+            local handle = obj:FindFirstChild("Handle")
+            if not handle then continue end
+
+            if not WeapESP[obj] then
+                WeapESP[obj] = ND("Text", {
+                    Color = Color3.fromRGB(255, 200, 50),
+                    Size = 13, Center = true, Outline = true,
+                    OutlineColor = Color3.new(0,0,0), Visible = false
+                })
+            end
+
+            local sp, on = W2S(handle.Position)
+            if on and WeapESP[obj] then
+                local lhrp = LocalHRP()
+                local dist = lhrp and math.floor((lhrp.Position - handle.Position).Magnitude) or 0
+                WeapESP[obj].Text = string.format("⚔ %s [%dm]", obj.Name, dist)
+                WeapESP[obj].Position = sp
+                WeapESP[obj].Visible = true
+            elseif WeapESP[obj] then
+                WeapESP[obj].Visible = false
+            end
+        end
+    end
+    -- Clean up removed weapons
+    for obj, d in pairs(WeapESP) do
+        if not handled[obj] then
+            pcall(function() d:Remove() end)
+            WeapESP[obj] = nil
+        end
+    end
+end
+
+local function HideWeaponESP()
+    for _, d in pairs(WeapESP) do pcall(function() d.Visible = false end) end
+end
 
 -- ═══════════════════════════════════════════════════════════
 --  Player events
@@ -819,7 +923,7 @@ local function BuildMenu()
     Instance.new("UICorner", tb).CornerRadius = UDim.new(0,8)
 
     local ttl = Instance.new("TextLabel", tb)
-    ttl.Text = "⟐ NullSyntax v5 — RIVALS"
+    ttl.Text = "⟐ NullSyntax v6 — RIVALS"
     ttl.Size = UDim2.new(1,-50,1,0)
     ttl.Position = UDim2.new(0,12,0,0)
     ttl.BackgroundTransparency = 1
@@ -934,6 +1038,13 @@ local function BuildMenu()
             if key == "Speed" and not tbl[key] then
                 local h = LocalHum(); if h then h.WalkSpeed=16; h.JumpPower=50 end
             end
+            if key == "ThirdPerson" and not tbl[key] then
+                LP.CameraMaxZoomDistance = 128
+                LP.CameraMinZoomDistance = 0.5
+            end
+            if key == "FOVChanger" and not tbl[key] then
+                Camera.FieldOfView = 70
+            end
         end
 
         btn.MouseButton1Click:Connect(function()
@@ -943,6 +1054,68 @@ local function BuildMenu()
             else
                 doToggle()
             end
+        end)
+
+        frame.MouseEnter:Connect(function() frame.BackgroundColor3 = Color3.fromRGB(38,38,38) end)
+        frame.MouseLeave:Connect(function() frame.BackgroundColor3 = Color3.fromRGB(28,28,28) end)
+    end
+
+    -- Slider: creates a row with [-] value [+] buttons
+    local function Slider(label, tbl, key, minVal, maxVal, step, fmt)
+        order = order + 1
+        local frame = Instance.new("Frame", scroll)
+        frame.Size = UDim2.new(1,-10,0,30)
+        frame.BackgroundColor3 = Color3.fromRGB(28,28,28)
+        frame.BorderSizePixel = 0
+        frame.LayoutOrder = order
+        Instance.new("UICorner", frame).CornerRadius = UDim.new(0,6)
+
+        local lbl = Instance.new("TextLabel", frame)
+        lbl.Text = label
+        lbl.Size = UDim2.new(0.5,-8,1,0)
+        lbl.Position = UDim2.new(0,10,0,0)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(215,215,225)
+        lbl.Font = Enum.Font.GothamSemibold
+        lbl.TextSize = 13
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        local valLabel = Instance.new("TextLabel", frame)
+        valLabel.Text = string.format(fmt or "%s", tostring(tbl[key]))
+        valLabel.Size = UDim2.new(0,50,1,0)
+        valLabel.Position = UDim2.new(0.5,10,0,0)
+        valLabel.BackgroundTransparency = 1
+        valLabel.TextColor3 = Color3.fromRGB(170,85,255)
+        valLabel.Font = Enum.Font.GothamBold
+        valLabel.TextSize = 14
+
+        local minusBtn = Instance.new("TextButton", frame)
+        minusBtn.Size = UDim2.new(0,24,0,22)
+        minusBtn.Position = UDim2.new(1,-62,0.5,-11)
+        minusBtn.Text = "-"
+        minusBtn.BackgroundColor3 = Color3.fromRGB(55,55,55)
+        minusBtn.TextColor3 = Color3.new(1,1,1)
+        minusBtn.Font = Enum.Font.GothamBold
+        minusBtn.TextSize = 16
+        Instance.new("UICorner", minusBtn).CornerRadius = UDim.new(0,4)
+
+        local plusBtn = Instance.new("TextButton", frame)
+        plusBtn.Size = UDim2.new(0,24,0,22)
+        plusBtn.Position = UDim2.new(1,-32,0.5,-11)
+        plusBtn.Text = "+"
+        plusBtn.BackgroundColor3 = Color3.fromRGB(55,55,55)
+        plusBtn.TextColor3 = Color3.new(1,1,1)
+        plusBtn.Font = Enum.Font.GothamBold
+        plusBtn.TextSize = 16
+        Instance.new("UICorner", plusBtn).CornerRadius = UDim.new(0,4)
+
+        minusBtn.MouseButton1Click:Connect(function()
+            tbl[key] = math.max(minVal, tbl[key] - step)
+            valLabel.Text = string.format(fmt or "%s", tostring(tbl[key]))
+        end)
+        plusBtn.MouseButton1Click:Connect(function()
+            tbl[key] = math.min(maxVal, tbl[key] + step)
+            valLabel.Text = string.format(fmt or "%s", tostring(tbl[key]))
         end)
 
         frame.MouseEnter:Connect(function() frame.BackgroundColor3 = Color3.fromRGB(38,38,38) end)
@@ -981,6 +1154,8 @@ local function BuildMenu()
     Toggle("Wall Check",           CFG.Combat, "WallCheck")
     Toggle("Team Check",           CFG.Combat, "TeamCheck")
     Toggle("Show FOV Circle",      CFG.Combat, "ShowFOV")
+    Slider("Aim FOV Radius",       CFG.Combat, "FOV", 30, 500, 10, "%d")
+    Slider("Aim Smoothing",        CFG.Combat, "Smoothing", 0.05, 1, 0.05, "%.2f")
 
     Section("── VISUALS ──")
     Toggle("Enable ESP",           CFG.Visuals, "ESP")
@@ -989,22 +1164,47 @@ local function BuildMenu()
     Toggle("Names & Health",       CFG.Visuals, "Names")
     Toggle("Health Bar",           CFG.Visuals, "Health")
     Toggle("Chams (Highlight)",    CFG.Visuals, "Chams")
+    Toggle("Weapon / Item ESP",    CFG.Visuals, "WeaponESP")
     Toggle("Custom Crosshair",     CFG.Visuals, "Crosshair")
+    Toggle("FOV Changer",          CFG.Visuals, "FOVChanger")
+    Slider("Game FOV",             CFG.Visuals, "GameFOV", 30, 120, 5, "%d°")
+    Toggle("Third Person Lock",    CFG.Visuals, "ThirdPerson")
 
     Section("── MOVEMENT ──")
     Toggle("Speed Hack (CFrame)",  CFG.Movement, "Speed")
+    Slider("Speed Multiplier",     CFG.Movement, "SpeedVal", 0.5, 10, 0.5, "%.1fx")
     Toggle("Fly Mode",             CFG.Movement, "Fly")
+    Slider("Fly Speed",            CFG.Movement, "FlySpeed", 10, 200, 10, "%d")
     Toggle("Noclip",               CFG.Movement, "Noclip")
     Toggle("Infinite Jump",        CFG.Movement, "InfJump")
+    Toggle("No Fall Damage",       CFG.Movement, "NoFallDmg")
     Toggle("Bunny Hop",            CFG.Movement, "BunnyHop")
     Toggle("SpinBot (Anti-Aim)",   CFG.Movement, "SpinBot")
 
     Section("── MISC ──")
     Toggle("Anti-Kick",            CFG.Misc, "AntiKick")
+    Toggle("Anti-AFK",             CFG.Misc, "AntiAFK")
     Toggle("Invisibility (Visual)",CFG.Misc, "InvisVis")
     Toggle("Invisibility (Under)", CFG.Misc, "InvisUnder")
     Toggle("Full Bright",          CFG.Misc, "FullBright")
     Toggle("Blast Protection",     CFG.Misc, "BlastProt")
+    ActionBtn("⚡ TP to Closest Enemy", function()
+        pcall(function()
+            local lhrp = LocalHRP()
+            if not lhrp then return end
+            local best, bestD = nil, math.huge
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr == LP or not IsAlive(plr) or not IsEnemy(plr) then continue end
+                local _, hrp = Char(plr)
+                if not hrp then continue end
+                local d = (lhrp.Position - hrp.Position).Magnitude
+                if d < bestD then bestD = d; best = hrp end
+            end
+            if best then
+                lhrp.CFrame = best.CFrame * CFrame.new(0, 0, -5) -- 5 studs behind them
+            end
+        end)
+    end)
     ActionBtn("⟳ Server Hop", function()
         pcall(function()
             local data = HttpS:JSONDecode(game:HttpGetAsync(
@@ -1093,6 +1293,6 @@ end)
 -- ═══════════════════════════════════════════════════════════
 
 local hk = hookOK and "namecall ✓" or "namecall ✗ (fallback)"
-print("[NullSyntax] v5 FINAL loaded — " .. hk)
+print("[NullSyntax] v6 loaded — " .. hk)
 print("[NullSyntax] RMB=Legit | 1=Rage | Insert=Master | RAlt=Menu")
-print("[NullSyntax] Anti-Kick ON | Silent Aim ON | ESP ON")
+print("[NullSyntax] Features: FOV Changer, Weapon ESP, TP, Anti-AFK, No Fall Dmg")
